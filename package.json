@@ -1,0 +1,1219 @@
+# Overzicht
+
+Dit document werkt een complete MVP uit voor jullie website met twee portalen:
+
+* **Chauffeursportaal**: profielen (zelf te bewerken), contracten uploaden/opslag, urenregistratie, documenten.
+* **Opdrachtgeversportaal**: opdrachten/boekingen, Track & Trace, documenten (CMR/PoD), facturen (optioneel in MVP).
+* **Beheer**: gebruikers & rollen, voertuigen, basisinstellingen.
+
+We kiezen voor een moderne, onderhoudbare stack die ook zonder eigen DevOps-team goed te beheren is.
+
+---
+
+## 1) Architectuur (hoog niveau)
+
+**Frontend/Backend**: Next.js 14 (App Router) + TypeScript + Tailwind CSS
+**Auth**: Auth.js (NextAuth) met e-mail + wachtwoord of magic link; optioneel SSO later
+**DB/ORM**: PostgreSQL + Prisma
+**Opslag**: S3-compatibel (bijv. Wasabi/Cloudflare R2) voor contracten, CMR’s, PoD’s
+**Background jobs**: Vercel Cron/Cloudflare Queues (voor e-mailnotificaties, PDF-generatie)
+**Validatie**: Zod
+**Logging/Monitoring**: Sentry (optioneel)
+**E-mail**: Resend/SMTP
+**GDPR**: opslag in EU-regio, minimale PII on-chain (indien Polkadot later)
+
+**Rollen**: `ADMIN`, `PLANNER`, `DRIVER`, `CLIENT`
+
+---
+
+## 2) Domein & hosting
+
+Jullie hebben een domein op **mijndomein.nl**. Twee gangbare opties:
+
+1. **Vercel-hosting (aanbevolen)**
+
+   * Maak een Vercel-account → importeer GitHub-repo → automatische deploys.
+   * In Mijndomein DNS: voeg CNAME toe naar Vercel (bijv. `app` → `cname.vercel-dns.com`) en stel `www`/root doorverwijzing in.
+   * Voordeel: gratis SSL, schaalbaar, makkelijk CI/CD.
+
+2. **VPS/Docker**
+
+   * Dockerize Next.js + Postgres + MinIO (S3).
+   * Nginx reverse proxy; Let’s Encrypt voor SSL.
+   * Meer beheerlast, maar volledig onder eigen controle.
+
+---
+
+## 3) Datamodel (Prisma)
+
+Onderstaand schema dekt de MVP. Breid gerust uit met wagenparkonderhoud, ritten, etc.
+
+```prisma
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PLANNER
+  DRIVER
+  CLIENT
+}
+
+enum DocType {
+  CONTRACT
+  CMR
+  POD
+  LICENSE
+  OTHER
+}
+
+enum ShipmentStatus {
+  DRAFT
+  PLANNED
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String
+  role          Role
+  phone         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  driverProfile DriverProfile?
+  client        Client?
+}
+
+model DriverProfile {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id])
+  licenseNumber    String?
+  licenseValidUntil DateTime?
+  address          String?
+  avatarUrl        String?
+  emergencyContact String?
+  hourEntries      HourEntry[]
+  documents        Document[]
+}
+
+model Client {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  user       User      @relation(fields: [userId], references: [id])
+  company    String
+  vatNumber  String?
+  address    String?
+  shipments  Shipment[]
+}
+
+model Vehicle {
+  id           String   @id @default(cuid())
+  plateNumber  String   @unique
+  type         String
+  active       Boolean  @default(true)
+}
+
+model Shipment {
+  id            String          @id @default(cuid())
+  clientId      String
+  client        Client          @relation(fields: [clientId], references: [id])
+  reference     String
+  pickupAddress String
+  deliveryAddress String
+  pickupAt      DateTime
+  deliveryEta   DateTime?
+  status        ShipmentStatus  @default(DRAFT)
+  driverId      String?
+  driver        User?           @relation(fields: [driverId], references: [id])
+  vehicleId     String?
+  vehicle       Vehicle?        @relation(fields: [vehicleId], references: [id])
+  documents     Document[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model Document {
+  id          String   @id @default(cuid())
+  ownerUserId String?
+  ownerUser   User?    @relation(fields: [ownerUserId], references: [id])
+  driverId    String?
+  driver      DriverProfile? @relation(fields: [driverId], references: [id])
+  shipmentId  String?
+  shipment    Shipment? @relation(fields: [shipmentId], references: [id])
+  type        DocType
+  title       String
+  fileKey     String   // S3 key
+  fileUrl     String   // signed/public URL
+  uploadedAt  DateTime @default(now())
+}
+
+model HourEntry {
+  id           String   @id @default(cuid())
+  driverId     String
+  driver       DriverProfile @relation(fields: [driverId], references: [id])
+  date         DateTime
+  startTime    DateTime
+  endTime      DateTime
+  breakMinutes Int       @default(0)
+  notes        String?
+  approved     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+}
+```
+
+---
+
+## 4) User stories (MVP)
+
+**Chauffeur**
+
+* Profiel bekijken/bewerken (adres, rijbewijs, noodcontact).
+* Contract uploaden (PDF), eigen documenten inzien.
+* Uren invoeren per dag + pauzes; inzage in status (well/ niet goedgekeurd).
+
+**Opdrachtgever (klant)**
+
+* Aanmelden/inloggen.
+* Nieuwe zending aanmaken (ophaal-/leveradres, referentie, opmerkingen).
+* Status volgen (gepland → onderweg → geleverd). Documenten (CMR, PoD) downloaden.
+
+**Planner/Beheer**
+
+* Gebruikers en rollen beheren.
+* Zendingen toewijzen aan chauffeur + voertuig.
+* Uren goed- of afkeuren.
+
+---
+
+## 5) UI/UX-richtlijnen
+
+* Navigatie: Dashboard, Mijn Profiel, Documenten, Uren (chauffeur) / Zendingen, Documenten (klant) / Admin (planner).
+* Componenten: tabeloverzichten met zoeken/filteren, modals voor create/edit, drag & drop upload.
+* Toegankelijkheid: duidelijke validatie, NL/EN toggle (i18n later).
+
+---
+
+## 6) Next.js mapstructuur (voorbeeld)
+
+```
+apps/web
+  ├─ app
+  │  ├─ (public)
+  │  │  ├─ page.tsx            // marketing homepage
+  │  │  └─ contact/page.tsx
+  │  ├─ (auth)
+  │  │  ├─ login/page.tsx
+  │  │  └─ register/page.tsx
+  │  ├─ dashboard
+  │  │  ├─ layout.tsx
+  │  │  ├─ page.tsx            // rolgebaseerd overzicht
+  │  │  ├─ driver
+  │  │  │  ├─ profile/page.tsx
+  │  │  │  ├─ hours/page.tsx
+  │  │  │  └─ documents/page.tsx
+  │  │  ├─ client
+  │  │  │  ├─ shipments/page.tsx
+  │  │  │  └─ documents/page.tsx
+  │  │  └─ admin
+  │  │     ├─ users/page.tsx
+  │  │     ├─ shipments/page.tsx
+  │  │     └─ vehicles/page.tsx
+  │  └─ api
+  │     ├─ auth/[...nextauth]/route.ts
+  │     ├─ driver
+  │     │  ├─ hours/route.ts   // POST/GET uren
+  │     │  └─ documents/route.ts
+  │     ├─ client/shipments/route.ts
+  │     ├─ admin/users/route.ts
+  │     └─ upload/route.ts     // S3 signed URLs
+  ├─ components
+  │  ├─ ui/* (knoppen, tabel, modal)
+  │  ├─ forms/* (Zod + RHF)
+  │  └─ layout/*
+  ├─ lib
+  │  ├─ auth.ts
+  │  ├─ db.ts
+  │  ├─ s3.ts
+  │  └─ validators.ts
+  ├─ prisma/schema.prisma
+  └─ tailwind.config.ts
+```
+
+---
+
+## 7) Auth.js (NextAuth) – basisconfig
+
+```ts
+// app/api/auth/[...nextauth]/route.ts
+import NextAuth from "next-auth";
+import Credentials from "next-auth/providers/credentials";
+import { PrismaClient } from "@prisma/client";
+import { compare } from "bcryptjs";
+
+const prisma = new PrismaClient();
+
+const authOptions = {
+  providers: [
+    Credentials({
+      name: "Email & Wachtwoord",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Wachtwoord", type: "password" },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) return null;
+        const user = await prisma.user.findUnique({ where: { email: credentials.email } });
+        if (!user) return null;
+        const ok = await compare(credentials.password, user.passwordHash);
+        if (!ok) return null;
+        return { id: user.id, email: user.email, name: user.name, role: user.role } as any;
+      },
+    }),
+  ],
+  session: { strategy: "jwt" },
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) token.role = (user as any).role;
+      return token;
+    },
+    async session({ session, token }) {
+      (session as any).role = token.role;
+      return session;
+    },
+  },
+};
+
+const handler = NextAuth(authOptions as any);
+export { handler as GET, handler as POST };
+```
+
+---
+
+## 8) Hulpfuncties (DB, S3)
+
+```ts
+// lib/db.ts
+import { PrismaClient } from "@prisma/client";
+export const prisma = new PrismaClient();
+
+// lib/s3.ts
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+export const s3 = new S3Client({
+  region: process.env.S3_REGION!,
+  endpoint: process.env.S3_ENDPOINT!, // bv. https://s3.eu-central-1.wasabisys.com
+  credentials: { accessKeyId: process.env.S3_KEY!, secretAccessKey: process.env.S3_SECRET! },
+});
+```
+
+---
+
+## 9) API – Urenregistratie (chauffeur)
+
+```ts
+// app/api/driver/hours/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { z } from "zod";
+
+const hourSchema = z.object({
+  date: z.string(), // ISO
+  startTime: z.string(),
+  endTime: z.string(),
+  breakMinutes: z.number().min(0).max(300).default(0),
+  notes: z.string().optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  const data = hourSchema.parse(body);
+  const userId = (req as any).auth?.user?.id || (await import("next-auth")).getServerSession;
+  // In praktijk: haal userId uit session (NextAuth helper)
+  // Hier verkort weergegeven
+
+  // Zoek driverProfile
+  const driver = await prisma.driverProfile.findUnique({ where: { userId: userId! } });
+  if (!driver) return NextResponse.json({ error: "Not a driver" }, { status: 403 });
+
+  const entry = await prisma.hourEntry.create({
+    data: {
+      driverId: driver.id,
+      date: new Date(data.date),
+      startTime: new Date(data.startTime),
+      endTime: new Date(data.endTime),
+      breakMinutes: data.breakMinutes,
+      notes: data.notes,
+    },
+  });
+  return NextResponse.json(entry);
+}
+
+export async function GET() {
+  // Haal eigen uurstaten op
+  const driverId = "from-session"; // placeholder
+  const entries = await prisma.hourEntry.findMany({ where: { driverId }, orderBy: { date: "desc" } });
+  return NextResponse.json(entries);
+}
+```
+
+---
+
+## 10) API – Document upload (S3 signed URL)
+
+```ts
+// app/api/upload/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
+
+export async function POST(req: NextRequest) {
+  const { fileName, fileType, folder } = await req.json();
+  const key = `${folder}/${crypto.randomUUID()}-${fileName}`;
+  // Gebruik hier een presigned URL helper (AWS SDK v3 S3 Presign)
+  // i.v.m. beknoptheid: veronderstel dat je een signedUrl genereert
+  const signedUrl = "https://example-s3-url";
+  return NextResponse.json({ key, signedUrl });
+}
+```
+
+---
+
+## 11) Chauffeur UI – Profiel en Uren
+
+```tsx
+// app/dashboard/driver/profile/page.tsx
+"use client";
+import { useState } from "react";
+import { useSession } from "next-auth/react";
+
+export default function DriverProfilePage() {
+  const { data } = useSession();
+  const [form, setForm] = useState({ address: "", emergencyContact: "" });
+  async function save() {
+    await fetch("/api/driver/profile", { method: "POST", body: JSON.stringify(form) });
+  }
+  return (
+    <div className="max-w-2xl space-y-4">
+      <h1 className="text-2xl font-semibold">Mijn Profiel</h1>
+      <label className="block">
+        <span>Adres</span>
+        <input className="input" value={form.address} onChange={e=>setForm(p=>({...p,address:e.target.value}))}/>
+      </label>
+      <label className="block">
+        <span>Noodcontact</span>
+        <input className="input" value={form.emergencyContact} onChange={e=>setForm(p=>({...p,emergencyContact:e.target.value}))}/>
+      </label>
+      <button onClick={save} className="btn btn-primary">Opslaan</button>
+    </div>
+  );
+}
+```
+
+```tsx
+// app/dashboard/driver/hours/page.tsx
+"use client";
+import { useEffect, useState } from "react";
+
+export default function HoursPage() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [newRow, setNewRow] = useState({ date: "", startTime: "", endTime: "", breakMinutes: 0 });
+  useEffect(() => { fetch("/api/driver/hours").then(r=>r.json()).then(setRows); }, []);
+  async function add() {
+    await fetch("/api/driver/hours",{ method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(newRow)});
+    const list = await fetch("/api/driver/hours").then(r=>r.json());
+    setRows(list);
+  }
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-semibold">Urenregistratie</h1>
+      <div className="grid grid-cols-4 gap-2">
+        <input placeholder="Datum" type="date" onChange={e=>setNewRow({...newRow,date:e.target.value})}/>
+        <input placeholder="Start" type="datetime-local" onChange={e=>setNewRow({...newRow,startTime:e.target.value})}/>
+        <input placeholder="Einde" type="datetime-local" onChange={e=>setNewRow({...newRow,endTime:e.target.value})}/>
+        <input placeholder="Pauze (min)" type="number" onChange={e=>setNewRow({...newRow,breakMinutes:Number(e.target.value)})}/>
+      </div>
+      <button className="btn btn-primary" onClick={add}>Toevoegen</button>
+      <table className="min-w-full">
+        <thead><tr><th>Datum</th><th>Start</th><th>Einde</th><th>Pauze</th><th>Status</th></tr></thead>
+        <tbody>
+          {rows.map(r=> (
+            <tr key={r.id}><td>{new Date(r.date).toLocaleDateString()}</td><td>{new Date(r.startTime).toLocaleString()}</td><td>{new Date(r.endTime).toLocaleString()}</td><td>{r.breakMinutes}</td><td>{r.approved?"Goedgekeurd":"Ingediend"}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+```
+
+---
+
+## 12) Klant UI – Zendingen
+
+```tsx
+// app/dashboard/client/shipments/page.tsx
+"use client";
+import { useEffect, useState } from "react";
+
+export default function ClientShipmentsPage(){
+  const [rows, setRows] = useState<any[]>([]);
+  const [draft, setDraft] = useState({ reference:"", pickupAddress:"", deliveryAddress:"", pickupAt:"" });
+  useEffect(()=>{ fetch("/api/client/shipments").then(r=>r.json()).then(setRows); },[]);
+  async function create(){
+    await fetch("/api/client/shipments", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(draft)});
+    const list = await fetch("/api/client/shipments").then(r=>r.json());
+    setRows(list);
+  }
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-semibold">Mijn zendingen</h1>
+      <div className="grid grid-cols-4 gap-2">
+        <input placeholder="Referentie" onChange={e=>setDraft(p=>({...p,reference:e.target.value}))}/>
+        <input placeholder="Ophaaladres" onChange={e=>setDraft(p=>({...p,pickupAddress:e.target.value}))}/>
+        <input placeholder="Afleveradres" onChange={e=>setDraft(p=>({...p,deliveryAddress:e.target.value}))}/>
+        <input type="datetime-local" placeholder="Ophaaltijd" onChange={e=>setDraft(p=>({...p,pickupAt:e.target.value}))}/>
+      </div>
+      <button className="btn btn-primary" onClick={create}>Zending aanvragen</button>
+      <table className="min-w-full">
+        <thead><tr><th>Ref</th><th>Status</th><th>Ophaal</th><th>Aflever</th></tr></thead>
+        <tbody>
+          {rows.map(r=> (
+            <tr key={r.id}><td>{r.reference}</td><td>{r.status}</td><td>{r.pickupAddress}</td><td>{r.deliveryAddress}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+```
+
+---
+
+## 13) Admin – Gebruikersbeheer
+
+```ts
+// app/api/admin/users/route.ts
+import { prisma } from "@/lib/db";
+import { NextResponse } from "next/server";
+export async function GET(){
+  const users = await prisma.user.findMany({ select: { id:true, email:true, name:true, role:true }});
+  return NextResponse.json(users);
+}
+```
+
+---
+
+## 14) Beveiliging & privacy (belangrijk)
+
+* **Rollen afdwingen** in middleware (route handlers) en in UI (component-level guards).
+* **Bestandsprivacy**: S3 private bucket + time-limited signed URLs.
+* **PII-minimalisatie**: alleen noodzakelijke velden in DB.
+* **Back-ups**: Postgres dagelijks; S3 versiebeheer.
+* **Auditlog**: logins, wijzigingen in profielen/uren, statuswijzigingen van zendingen.
+
+---
+
+## 15) Installatie & lokale start
+
+```bash
+pnpm dlx create-next-app@latest transport-portal --typescript --tailwind --app
+cd transport-portal
+pnpm add @prisma/client prisma next-auth zod bcryptjs @aws-sdk/client-s3
+pnpm add -D @types/bcryptjs
+
+# Prisma init
+pnpm dlx prisma init
+# Voeg schema toe (zie hierboven) en voer migratie uit
+pnpm dlx prisma migrate dev --name init
+
+# Start dev
+pnpm dev
+```
+
+---
+
+## 16) .env (voorbeeld)
+
+```
+DATABASE_URL="postgresql://user:pass@host:5432/db?schema=public"
+NEXTAUTH_SECRET="genereer_met: openssl rand -base64 32"
+NEXTAUTH_URL="http://localhost:3000"
+S3_REGION="eu-central-1"
+S3_ENDPOINT="https://s3.eu-central-1.wasabisys.com"
+S3_KEY="..."
+S3_SECRET="..."
+```
+
+---
+
+## 17) Roadmap (na MVP)
+
+* **Uren goedkeuring door planner** + export naar loonadministratie (CSV/Exact Online).
+* **Mobiele app** (React Native) voor chauffeurs – offline first, scan CMR/QR.
+* **Track & Trace** (telemetrie, live ETA’s).
+* **Facturatie** (PDF-generatie, e-factuur/UBL).
+* **Verifieerbare PoD** + optioneel hash op Polkadot (Moonbeam/KILT).
+* **Notificaties** (e-mail/SMS) bij statuswijzigingen.
+
+---
+
+## 18) Wat ChatGPT voor jullie kan doen
+
+* Teksten genereren (website/FAQ/voorwaarden).
+* Codevoorbeelden uitbreiden of omzetten naar jullie specifieke wensen.
+* API-koppelingen (Exact, bol.com logistics, eigen TMS) uitwerken.
+* Stapsgewijze begeleiding bij deployen op Vercel of VPS.
+
+---
+
+> **Tip**: Start klein. Zet eerst auth, rollen en 2–3 kernflows neer (profiel, uren, zending aanmaken). Breid daarna iteratief uit met documenten, toewijzing en track & trace.
+
+---
+
+# 19) Beginners-stappenplan (zonder technische voorkennis)
+
+Dit is de **snelste en simpelste route** om live te gaan met jullie website én de portalen.
+
+## A. Accounts aanmaken (gratis waar mogelijk)
+
+1. **GitHub** – zodat de code ergens staat: [https://github.com](https://github.com)
+2. **Vercel** – hosting die Next.js automatisch deployt: [https://vercel.com](https://vercel.com)
+3. **Neon** (of Supabase/Render) – Postgres database in EU: [https://neon.tech](https://neon.tech)
+4. **Cloudflare R2** of **Wasabi** – S3-bestandsopslag (contracten/CMR): r2.cloudflare.com of wasabi.com
+
+> Waarom niet direct op Mijndomein hosten?
+> De portalen (inloggen, uren, documenten) hebben ‘serverless’/Node nodig. Dat gaat op de standaard Mijndomein-webhosting meestal **niet**. Daarom: **Vercel** voor de app en via Mijndomein alleen de **domeinnaam** koppelen.
+
+## B. Project klaarzetten
+
+1. Open GitHub → **New repository** → noem het `transport-portal`.
+2. Klik **Add file → Create new file**. Maak de mappen/bestanden aan zoals hieronder bij **§21 Kopieerbare layout** (kopieer & plak code).
+3. Maak een gratis **Neon** database en kopieer de `DATABASE_URL`.
+4. Maak een **S3 bucket** (R2/Wasabi) en noteer `S3_ENDPOINT`, `S3_KEY`, `S3_SECRET`, `S3_REGION`.
+
+## C. Deployen naar Vercel
+
+1. Log in op Vercel → **New Project** → importeer jullie GitHub-repo.
+2. Voeg **Environment Variables** toe (klik *Settings → Environment Variables*):
+
+   * `DATABASE_URL` (van Neon)
+   * `NEXTAUTH_SECRET` (klik “Generate”)
+   * `NEXTAUTH_URL` (voor productie later `https://app.julledomein.nl`)
+   * `S3_REGION`, `S3_ENDPOINT`, `S3_KEY`, `S3_SECRET`
+3. Klik **Deploy**. Wacht tot de groene “Deployed” melding.
+
+## D. Domein van Mijndomein koppelen
+
+We raden aan: `www.julledomein.nl` → marketing site (Vercel), **en** `app.julledomein.nl` → de portalen.
+
+1. Ga in Vercel naar **Settings → Domains** → voeg `julledomein.nl` toe.
+2. Log in bij **Mijndomein DNS**:
+
+   * **A-record** voor `@` (root) en **CNAME** voor `www` naar Vercel zoals Vercel aangeeft.
+   * **CNAME** `app` → `cname.vercel-dns.com`.
+3. Binnen 5–20 min werkt `https://app.julledomein.nl` met SSL.
+
+## E. Database en tabellen aanmaken
+
+1. In Vercel → **Deployments → Open** → open de terminal *(of doe dit lokaal)*.
+2. Voer Prisma migratie uit (lokaal of via GitHub Action). Lokaal:
+
+   ```bash
+   # eenmalig lokaal
+   pnpm install
+   npx prisma migrate deploy
+   ```
+
+   Of zet een Vercel **Build Command**: `npx prisma migrate deploy`.
+
+## F. Testen
+
+* Maak een **admingebruiker** (tijdelijk script in `/scripts/seed-admin.ts`) of via een eenvoudige API-route.
+* Log in → maak een chauffeur aan → test **uren toevoegen** en **document upload**.
+
+## G. Gebruik
+
+* **Chauffeurs** loggen in via `app.julledomein.nl/login` → Profiel, Uren, Documenten.
+* **Opdrachtgevers** via `app.julledomein.nl/login` → Zendingen, Documenten.
+
+> Klaar. Als dit draait, kunnen we stap voor stap extra features activeren (goedkeuren uren, facturatie, track & trace).
+
+---
+
+# 20) Wat zit al in de code & wat nog niet
+
+✅ **Al aanwezig in het MVP (canvas):**
+
+* Rollen en datamodel (Prisma) voor **User, DriverProfile, Client, Shipment, Document, HourEntry**.
+* **Uren-API** (aanmaken + lijst ophalen).
+* **Upload-API** (presigned URL skeleton).
+* **UI-pagina’s** voor chauffeur (Profiel, Uren) en opdrachtgever (Zendingen).
+* **Auth.js (NextAuth)** basisconfig (e-mail+wachtwoord).
+
+🧩 **Nog af te maken voor productie:**
+
+* Volledige **bestandsupload** (presigned URL genereren en client-side upload uitvoeren).
+* **Profiel-API** (POST/GET) – het UI-voorbeeld roept `/api/driver/profile` aan; voeg route toe.
+* **Role-guarding** (middleware) om routes te beschermen.
+* **Admin UI** om users aan te maken/wijzigen, chauffeurs aan klant te koppelen.
+* **Database seed** om de eerste admin te maken.
+* **E-mail** (SMTP/Resend) als je wachtwoord-herstel of magic link wil.
+
+> Geen zorgen: hieronder staat een **kopieerbare layout** met alle basisbestanden, zodat je direct kunt publiceren. Wij kunnen daarna samen de ontbrekende stukjes invullen.
+
+---
+
+# 21) Kopieerbare layout (Next.js + Tailwind)
+
+Plak onderstaande bestanden 1-op-1 in jullie GitHub-repo. Dit vormt de **basiswebsite + portaal**. (Het is compact gehouden; later kunnen we uitbreiden.)
+
+## 21.1 package.json
+
+```json
+{
+  "name": "transport-portal",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "next": "14.2.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "next-auth": "^4.24.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0",
+    "typescript": "^5.5.4",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.10"
+  }
+}
+```
+
+## 21.2 tailwind.config.ts
+
+```ts
+import type { Config } from 'tailwindcss'
+const config: Config = {
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"]
+};
+export default config;
+```
+
+## 21.3 postcss.config.js
+
+```js
+module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };
+```
+
+## 21.4 app/globals.css
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.input{ @apply border rounded-lg px-3 py-2 w-full; }
+.btn{ @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg border; }
+.btn-primary{ @apply bg-black text-white; }
+.card{ @apply border rounded-2xl p-6 shadow-sm bg-white; }
+```
+
+## 21.5 app/layout.tsx
+
+```tsx
+import './globals.css';
+import Link from 'next/link';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="nl">
+      <body className="min-h-screen bg-gray-50 text-gray-900">
+        <header className="border-b bg-white">
+          <div className="max-w-6xl mx-auto flex items-center justify-between p-4">
+            <Link href="/" className="font-semibold">Jullie Transport</Link>
+            <nav className="flex gap-6">
+              <Link href="/diensten">Diensten</Link>
+              <Link href="/contact">Contact</Link>
+              <Link className="btn btn-primary" href="/login">Inloggen</Link>
+            </nav>
+          </div>
+        </header>
+        <main className="max-w-6xl mx-auto p-4">{children}</main>
+        <footer className="border-t mt-10 bg-white"><div className="max-w-6xl mx-auto p-4 text-sm">© {new Date().getFullYear()} Jullie Transport</div></footer>
+      </body>
+    </html>
+  );
+}
+```
+
+## 21.6 app/page.tsx (homepage)
+
+```tsx
+export default function Home(){
+  return (
+    <div className="grid md:grid-cols-2 gap-8 items-center">
+      <div className="space-y-4">
+        <h1 className="text-4xl font-bold">Transport zoals het hoort</h1>
+        <p>Betrouwbare ritten, duidelijke communicatie en een portaal voor chauffeurs en opdrachtgevers.</p>
+        <div className="flex gap-3">
+          <a className="btn btn-primary" href="/login">Ga naar het portaal</a>
+          <a className="btn" href="/contact">Offerte aanvragen</a>
+        </div>
+      </div>
+      <div className="card">
+        <h2 className="text-xl font-semibold mb-2">Wat u krijgt</h2>
+        <ul className="list-disc pl-6 space-y-1">
+          <li>Chauffeursportaal: profiel, documenten, uren</li>
+          <li>Opdrachtgeversportaal: zendingen, documenten</li>
+          <li>Veilig, snel en eenvoudig</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+```
+
+## 21.7 app/diensten/page.tsx
+
+```tsx
+export default function Diensten(){
+  return (
+    <div className="prose max-w-3xl">
+      <h1>Diensten</h1>
+      <p>Distributie, koerierswerk, sneltransport, geconditioneerd vervoer. Neem contact op voor maatwerk.</p>
+    </div>
+  );
+}
+```
+
+## 21.8 app/contact/page.tsx
+
+```tsx
+export default function Contact(){
+  return (
+    <div className="grid md:grid-cols-2 gap-6">
+      <div className="card">
+        <h2 className="text-xl font-semibold mb-2">Contact</h2>
+        <p>Bel: 010-1234567<br/>Mail: info@julledomein.nl</p>
+      </div>
+      <div className="card">
+        <h2 className="text-xl font-semibold mb-2">Adres</h2>
+        <p>Voorbeeldstraat 1, 1234 AB Rotterdam</p>
+      </div>
+    </div>
+  );
+}
+```
+
+## 21.9 app/login/page.tsx (dummy – later koppelen aan Auth)
+
+```tsx
+export default function Login(){
+  return (
+    <div className="max-w-md mx-auto card">
+      <h1 className="text-2xl font-semibold mb-4">Inloggen</h1>
+      <form className="space-y-3">
+        <input className="input" placeholder="E-mail"/>
+        <input className="input" placeholder="Wachtwoord" type="password"/>
+        <button className="btn btn-primary w-full">Inloggen</button>
+      </form>
+      <p className="text-sm mt-3">(In de echte versie wordt dit gekoppeld aan NextAuth.)</p>
+    </div>
+  );
+}
+```
+
+## 21.10 app/dashboard/layout.tsx (shell voor beide portalen)
+
+```tsx
+import Link from 'next/link';
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }){
+  return (
+    <div className="grid md:grid-cols-5 gap-6">
+      <aside className="md:col-span-1 card sticky top-4 h-fit">
+        <h2 className="font-semibold mb-3">Portaal</h2>
+        <div className="space-y-1">
+          <div className="text-xs uppercase text-gray-500">Chauffeur</div>
+          <Link href="/dashboard/driver/profile">Mijn Profiel</Link><br/>
+          <Link href="/dashboard/driver/hours">Uren</Link><br/>
+          <Link href="/dashboard/driver/documents">Documenten</Link>
+          <div className="text-xs uppercase text-gray-500 mt-3">Opdrachtgever</div>
+          <Link href="/dashboard/client/shipments">Zendingen</Link><br/>
+          <Link href="/dashboard/client/documents">Documenten</Link>
+        </div>
+      </aside>
+      <section className="md:col-span-4">{children}</section>
+    </div>
+  );
+}
+```
+
+> De **driver/ client** pagina’s staan al eerder in het canvas (secties 11 en 12) en kunnen 1-op-1 worden toegevoegd.
+
+---
+
+# 22) Middleware (role guard) – simpel startpunt
+
+Zodra Auth is geactiveerd, voeg `middleware.ts` toe om `/dashboard` te beschermen. (Placeholder; we kunnen dit voor jullie invullen.)
+
+```ts
+// middleware.ts (schets)
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+export function middleware(req: NextRequest) {
+  // Als geen sessie → redirect naar /login
+  // Als rol geen toegang heeft → redirect naar /
+  return NextResponse.next();
+}
+export const config = { matcher: ['/dashboard/:path*'] };
+```
+
+---
+
+# 23) Wat jullie precies moeten doen (samenvatting)
+
+1. Maak GitHub + Vercel + Neon + R2/Wasabi accounts.
+2. Maak een nieuwe GitHub-repo en **plak de bestanden** uit §21 (en uit de eerdere secties 7, 9, 10, 11, 12 als jullie die klaar willen).
+3. Zet **Environment Variables** in Vercel (DATABASE_URL, NEXTAUTH_SECRET, S3_…).
+4. Koppel domein bij **Mijndomein** aan Vercel (A/CNAME records).
+5. Voer Prisma migratie uit (`npx prisma migrate deploy`).
+6. Test inloggen (dummy), voeg daarna NextAuth toe zoals in §7.
+7. Test **uren toevoegen** en **document upload**.
+8. Live op `app.julledomein.nl`.
+
+---
+
+# 24) Wil je dat ik de ontbrekende stukjes invul?
+
+Ik kan direct toevoegen:
+
+* **Volledige bestandsupload met presigned URLs** (client + server).
+* **/api/driver/profile** route + formulieren.
+* **Role-based bescherming** en een klein **Admin**-scherm om gebruikers te beheren.
+  Zeg het woord en ik werk het gelijk verder uit in deze canvas zodat je het kunt kopiëren.
+
+---
+
+# 25) Super-simpel stappenplan (10 stappen)
+
+**Doel:** binnen 60–90 minuten live met een strakke, moderne site + portaal, NL/EN switch.
+
+1. **Maak accounts**
+
+   * GitHub (code), Vercel (hosting), Neon/Supabase (Postgres), Cloudflare R2 of Wasabi (S3-opslag).
+
+2. **Nieuwe GitHub-repo**
+
+   * Noem `transport-portal`.
+   * Voeg de bestanden toe uit §21 (layout) **plus** de nieuwe NL/EN-versie hieronder (§26–§28). Kopieer & plak.
+
+3. **Database maken**
+
+   * In Neon/Supabase: maak Postgres aan in **EU**. Kopieer `DATABASE_URL`.
+
+4. **S3-opslag maken**
+
+   * Maak een bucket. Noteer: `S3_ENDPOINT`, `S3_KEY`, `S3_SECRET`, `S3_REGION`.
+
+5. **Vercel deploy**
+
+   * Vercel → New Project → importeer GitHub repo → **Add Env Vars**:
+     `DATABASE_URL`, `NEXTAUTH_SECRET` (Generate), `NEXTAUTH_URL` (tijdelijk Vercel URL), `S3_*` variabelen.
+
+6. **Prisma migraties**
+
+   * In Vercel Build Command (of lokale terminal): `npx prisma migrate deploy`.
+
+7. **Domein koppelen (Mijndomein)**
+
+   * In Vercel → Settings → Domains → voeg `julledomein.nl`.
+   * In Mijndomein → DNS: stel records in zoals Vercel aangeeft.
+   * Maak subdomein `app.julledomein.nl` (CNAME → `cname.vercel-dns.com`).
+
+8. **NL/EN controle**
+
+   * Open de site → switch taal rechtsboven → check dat teksten wisselen.
+
+9. **Portaal testen**
+
+   * Ga naar `/dashboard/driver/hours` en `/dashboard/client/shipments` (dummy login nog) → check UI.
+
+10. **Volgende stap**
+
+* Activeer echte login (NextAuth), presigned uploads, role-guards (zie §20 & §29). We kunnen die code direct toevoegen.
+
+---
+
+# 26) Design-upgrade – strak & modern (Tailwind)
+
+We voegen een **donkerblauw/amber** kleurenpalet, ruim wit, afgeronde cards en een hero-sectie.
+
+## 26.1 tailwind.config.ts (uitgebreid)
+
+```ts
+import type { Config } from 'tailwindcss'
+const config: Config = {
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          50: '#eef5ff', 100: '#d9e8ff', 200: '#b3d1ff', 300: '#86b6ff',
+          400: '#4d90ff', 500: '#1f6bff', 600: '#134fd6', 700: '#0f3ea6', 800: '#0c317f', 900: '#0a285f'
+        },
+        accent: {
+          50:'#fff8e6',100:'#ffecc0',200:'#ffdf8a',300:'#ffd054',400:'#ffc226',500:'#ffb300',600:'#d68f00',700:'#a66f00',800:'#7f5600',900:'#5f4100'
+        }
+      },
+      boxShadow: { soft: '0 6px 24px rgba(0,0,0,0.06)' },
+      borderRadius: { xl: '1rem', '2xl': '1.25rem' }
+    }
+  }
+};
+export default config;
+```
+
+## 26.2 app/globals.css (bijwerken)
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root{ color-scheme: light; }
+.input{ @apply border rounded-xl px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-brand-400; }
+.btn{ @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl border shadow-soft transition; }
+.btn-primary{ @apply bg-brand-700 text-white border-brand-700 hover:bg-brand-800; }
+.btn-ghost{ @apply border-transparent hover:bg-gray-100; }
+.card{ @apply border rounded-2xl p-6 shadow-soft bg-white; }
+.badge{ @apply inline-block px-2 py-1 text-xs rounded-full bg-brand-50 text-brand-700; }
+.container{ @apply max-w-6xl mx-auto p-4; }
+```
+
+---
+
+# 27) NL/EN meertaligheid (App Router) – super simpel met `next-intl`
+
+We maken `/[locale]/...` routes en een taal-switcher.
+
+## 27.1 installatie
+
+```bash
+pnpm add next-intl
+```
+
+## 27.2 directory-structuur
+
+```
+app/
+  [locale]/
+    layout.tsx
+    page.tsx         // home
+    diensten/page.tsx
+    contact/page.tsx
+    login/page.tsx
+    dashboard/layout.tsx
+    dashboard/driver/profile/page.tsx
+    dashboard/driver/hours/page.tsx
+    dashboard/client/shipments/page.tsx
+messages/
+  nl.json
+  en.json
+middleware.ts
+```
+
+## 27.3 messages/nl.json
+
+```json
+{
+  "nav.home": "Home",
+  "nav.services": "Diensten",
+  "nav.contact": "Contact",
+  "nav.login": "Inloggen",
+  "hero.title": "Transport zoals het hoort",
+  "hero.subtitle": "Betrouwbare ritten, duidelijke communicatie en een portaal voor chauffeurs en opdrachtgevers.",
+  "hero.cta.portal": "Ga naar het portaal",
+  "hero.cta.quote": "Offerte aanvragen",
+  "footer.copy": "© {year} Jullie Transport",
+  "lang.nl": "Nederlands",
+  "lang.en": "English"
+}
+```
+
+## 27.4 messages/en.json
+
+```json
+{
+  "nav.home": "Home",
+  "nav.services": "Services",
+  "nav.contact": "Contact",
+  "nav.login": "Log in",
+  "hero.title": "Transport done right",
+  "hero.subtitle": "Reliable deliveries, clear communication and a portal for drivers and clients.",
+  "hero.cta.portal": "Go to the portal",
+  "hero.cta.quote": "Request a quote",
+  "footer.copy": "© {year} Your Transport",
+  "lang.nl": "Nederlands",
+  "lang.en": "English"
+}
+```
+
+## 27.5 middleware.ts
+
+```ts
+import createMiddleware from 'next-intl/middleware';
+
+export default createMiddleware({
+  locales: ['nl', 'en'],
+  defaultLocale: 'nl'
+});
+
+export const config = { matcher: ['/((?!_next|.*\..*).*)'] };
+```
+
+## 27.6 app/[locale]/layout.tsx (met taal-switcher)
+
+```tsx
+import '../globals.css';
+import Link from 'next/link';
+import {useLocale, NextIntlClientProvider} from 'next-intl';
+import {notFound} from 'next/navigation';
+import nl from '@/messages/nl.json';
+import en from '@/messages/en.json';
+
+const messages: Record<string, any> = { nl, en };
+
+export default function RootLayout({children, params}:{children:React.ReactNode, params:{locale:string}}){
+  const locale = useLocale();
+  if (!['nl','en'].includes(params.locale)) notFound();
+  const t = messages[params.locale];
+  return (
+    <html lang={params.locale}>
+      <body className="min-h-screen bg-gray-50 text-gray-900">
+        <NextIntlClientProvider locale={params.locale} messages={t}>
+          <Header locale={params.locale} />
+          <main className="container">{children}</main>
+          <Footer />
+        </NextIntlClientProvider>
+      </body>
+    </html>
+  );
+}
+
+function Header({locale}:{locale:string}){
+  const other = locale === 'nl' ? 'en' : 'nl';
+  return (
+    <header className="border-b bg-white">
+      <div className="container flex items-center justify-between">
+        <Link href={`/${locale}`} className="font-semibold text-brand-800">Jullie Transport</Link>
+        <nav className="flex items-center gap-6">
+          <Link href={`/${locale}`}>Home</Link>
+          <Link href={`/${locale}/diensten`}>Diensten</Link>
+          <Link href={`/${locale}/contact`}>Contact</Link>
+          <Link className="btn btn-primary" href={`/${locale}/login`}>Inloggen</Link>
+          <Link className="btn btn-ghost" href={`/${other}`}>{other.toUpperCase()}</Link>
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+function Footer(){
+  const year = new Date().getFullYear();
+  return (
+    <footer className="border-t mt-10 bg-white">
+      <div className="container text-sm">© {year} Jullie Transport</div>
+    </footer>
+  );
+}
+```
+
+## 27.7 app/[locale]/page.tsx (Hero + features)
+
+```tsx
+export default function Home(){
+  return (
+    <div className="grid md:grid-cols-2 gap-8 items-center">
+      <div className="space-y-4">
+        <h1 className="text-5xl font-extrabold text-brand-800 leading-tight">Transport zoals het hoort</h1>
+        <p className="text-lg text-gray-700">Betrouwbare ritten, duidelijke communicatie en een portaal voor chauffeurs en opdrachtgevers.</p>
+        <div className="flex gap-3">
+          <a className="btn btn-primary" href="/nl/login">Ga naar het portaal</a>
+          <a className="btn" href="/nl/contact">Offerte aanvragen</a>
+        </div>
+      </div>
+      <div className="card">
+        <div className="badge mb-3">Waarom wij</div>
+        <ul className="space-y-2">
+          <li>• Chauffeursportaal: profiel, documenten, uren</li>
+          <li>• Opdrachtgeversportaal: zendingen, documenten</li>
+          <li>• Veilig, snel en eenvoudig</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+```
+
+> Herhaal eenvoudige content-pagina’s voor `diensten` en `contact` in dezelfde stijl; vervang NL door EN in de `en` mappen of laat dezelfde componenten labels uit `messages` gebruiken (voor MVP mag het statisch).
+
+---
+
+# 28) Dashboard templates (driver/client) – NL/EN paden
+
+Gebruik de bestaande driver/client pagina’s uit §11 en §12 en plaats ze onder `app/[locale]/dashboard/...`. De navigatie staat in `app/[locale]/dashboard/layout.tsx`.
+
+```tsx
+// app/[locale]/dashboard/layout.tsx
+import Link from 'next/link';
+
+export default function DashboardLayout({ children, params }:{children:React.ReactNode, params:{locale:string}}){
+  const l = params.locale;
+  return (
+    <div className="grid md:grid-cols-5 gap-6">
+      <aside className="md:col-span-1 card sticky top-4 h-fit">
+        <h2 className="font-semibold mb-3">Portaal</h2>
+        <div className="space-y-1">
+          <div className="text-xs uppercase text-gray-500">Chauffeur</div>
+          <Link href={`/${l}/dashboard/driver/profile`}>Mijn Profiel</Link><br/>
+          <Link href={`/${l}/dashboard/driver/hours`}>Uren</Link><br/>
+          <Link href={`/${l}/dashboard/driver/documents`}>Documenten</Link>
+          <div className="text-xs uppercase text-gray-500 mt-3">Opdrachtgever</div>
+          <Link href={`/${l}/dashboard/client/shipments`}>Zendingen</Link><br/>
+          <Link href={`/${l}/dashboard/client/documents`}>Documenten</Link>
+        </div>
+      </aside>
+      <section className="md:col-span-4">{children}</section>
+    </div>
+  );
+}
+```
+
+---
+
+# 29) Volgende technische stap (optioneel, ik kan dit invullen)
+
+* **Auth (NextAuth)** aanzetten en de dashboard-routes beveiligen (middleware + server-actions).
+* **Presigned uploads** afronden (server: aanmaken URL; client: `fetch` PUT naar S3).
+* **Profiel-API** maken voor chauffeurs (POST/GET).
+* **Admin scherm** voor gebruikersbeheer.
+  Als jullie “Ja, graag” zeggen, voeg ik de volledige code hier toe zodat je alleen hoeft te kopiëren.
