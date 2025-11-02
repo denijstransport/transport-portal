@@ -41,6 +41,7 @@ model User {
   updatedAt     DateTime @updatedAt
   driverProfile DriverProfile?
   client        Client?
+  documents     Document[] @relation("UserDocuments")
 }
 
 model DriverProfile {
@@ -95,7 +96,7 @@ model Shipment {
 model Document {
   id          String   @id @default(cuid())
   ownerUserId String?
-  ownerUser   User?    @relation(fields: [ownerUserId], references: [id])
+  ownerUser   User?    @relation("UserDocuments", fields: [ownerUserId], references: [id])
   driverId    String?
   driver      DriverProfile? @relation(fields: [driverId], references: [id])
   shipmentId  String?
