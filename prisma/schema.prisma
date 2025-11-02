@@ -68,10 +68,12 @@ model Client {
 }
 
 model Vehicle {
-  id           String  @id @default(cuid())
-  plateNumber  String  @unique
+  id           String    @id @default(cuid())
+  plateNumber  String    @unique
   type         String
-  active       Boolean @default(true)
+  active       Boolean   @default(true)
+  // ⬇️ voeg deze regel toe (back-relation met naam)
+  shipments    Shipment[] @relation("VehicleToShipment")
 }
 
 model Shipment {
@@ -84,10 +86,15 @@ model Shipment {
   pickupAt        DateTime
   deliveryEta     DateTime?
   status          ShipmentStatus  @default(DRAFT)
+
   driverId        String?
-  driver          User?           @relation(fields: [driverId], references: [id])
+  // ⬇️ geef deze relatie een naam (zie stap 2)
+  driver          User?           @relation("UserToDriverShipments", fields: [driverId], references: [id])
+
   vehicleId       String?
-  vehicle         Vehicle?        @relation(fields: [vehicleId], references: [id])
+  // ⬇️ koppel aan de genoemde naam
+  vehicle         Vehicle?        @relation("VehicleToShipment", fields: [vehicleId], references: [id])
+
   documents       Document[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
