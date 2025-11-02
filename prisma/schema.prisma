@@ -39,9 +39,12 @@ model User {
   phone         String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
   driverProfile DriverProfile?
   client        Client?
-  documents     Document[] @relation("UserDocuments")
+
+  // ⬇️ back-relation naar shipments waar deze user de chauffeur is
+  shipmentsAsDriver Shipment[] @relation("UserToDriverShipments")
 }
 
 model DriverProfile {
