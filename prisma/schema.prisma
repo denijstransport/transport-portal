@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,6 +8,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/* =========================
+   Enums
+   ========================= */
 enum Role {
   ADMIN
   PLANNER
@@ -30,59 +34,70 @@ enum ShipmentStatus {
   CANCELLED
 }
 
+/* =========================
+   Modellen
+   ========================= */
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
+  id            String      @id @default(cuid())
+  email         String      @unique
   passwordHash  String
   name          String
   role          Role
   phone         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
+  // 1:1 links
   driverProfile DriverProfile?
   client        Client?
 
-  // ⬇️ back-relation naar shipments waar deze user de chauffeur is
+  // Back-relations (benoemd voor duidelijkheid)
   shipmentsAsDriver Shipment[] @relation("UserToDriverShipments")
+  documents         Document[] @relation("UserToOwnerDocuments")
 }
 
 model DriverProfile {
-  id                String    @id @default(cuid())
-  userId            String    @unique
-  user              User      @relation(fields: [userId], references: [id])
-  licenseNumber     String?
-  licenseValidUntil DateTime?
-  address           String?
-  avatarUrl         String?
-  emergencyContact  String?
-  hourEntries       HourEntry[]
-  documents         Document[]
+  id                 String       @id @default(cuid())
+  userId             String       @unique
+  user               User         @relation(fields: [userId], references: [id])
+  licenseNumber      String?
+  licenseValidUntil  DateTime?
+  address            String?
+  avatarUrl          String?
+  emergencyContact   String?
+
+  hourEntries        HourEntry[]
+  documents          Document[]   @relation("DriverProfileToDocuments")
 }
 
 model Client {
-  id         String   @id @default(cuid())
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id])
+  id         String     @id @default(cuid())
+  userId     String     @unique
+  user       User       @relation(fields: [userId], references: [id])
   company    String
   vatNumber  String?
   address    String?
+
   shipments  Shipment[]
 }
 
 model Vehicle {
-  id           String    @id @default(cuid())
-  plateNumber  String    @unique
+  id           String      @id @default(cuid())
+  plateNumber  String      @unique
   type         String
-  active       Boolean   @default(true)
-  // ⬇️ voeg deze regel toe (back-relation met naam)
-  shipments    Shipment[] @relation("VehicleToShipment")
+  active       Boolean     @default(true)
+
+  // Back-relation naar Shipment (benoemd)
+  shipments    Shipment[]  @relation("VehicleToShipment")
 }
 
 model Shipment {
   id              String          @id @default(cuid())
+
+  // Klant (verplicht)
   clientId        String
   client          Client          @relation(fields: [clientId], references: [id])
+
   reference       String
   pickupAddress   String
   deliveryAddress String
@@ -90,43 +105,52 @@ model Shipment {
   deliveryEta     DateTime?
   status          ShipmentStatus  @default(DRAFT)
 
+  // Chauffeur (optioneel) - benoemde relatie naar User
   driverId        String?
-  // ⬇️ geef deze relatie een naam (zie stap 2)
   driver          User?           @relation("UserToDriverShipments", fields: [driverId], references: [id])
 
+  // Voertuig (optioneel) - benoemde relatie naar Vehicle
   vehicleId       String?
-  // ⬇️ koppel aan de genoemde naam
   vehicle         Vehicle?        @relation("VehicleToShipment", fields: [vehicleId], references: [id])
 
-  documents       Document[]
+  // Documenten (benoemde relation-naam)
+  documents       Document[]      @relation("ShipmentToDocuments")
+
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 }
 
 model Document {
-  id          String   @id @default(cuid())
-  ownerUserId String?
-  ownerUser   User?    @relation("UserDocuments", fields: [ownerUserId], references: [id])
-  driverId    String?
-  driver      DriverProfile? @relation(fields: [driverId], references: [id])
-  shipmentId  String?
-  shipment    Shipment? @relation(fields: [shipmentId], references: [id])
-  type        DocType
-  title       String
-  fileKey     String
-  fileUrl     String
-  uploadedAt  DateTime @default(now())
+  id           String         @id @default(cuid())
+
+  // Eigenaar User (optioneel) - benoemde relatie
+  ownerUserId  String?
+  ownerUser    User?          @relation("UserToOwnerDocuments", fields: [ownerUserId], references: [id])
+
+  // DriverProfile (optioneel) - benoemde relatie
+  driverId     String?
+  driver       DriverProfile? @relation("DriverProfileToDocuments", fields: [driverId], references: [id])
+
+  // Shipment (optioneel) - benoemde relatie
+  shipmentId   String?
+  shipment     Shipment?      @relation("ShipmentToDocuments", fields: [shipmentId], references: [id])
+
+  type         DocType
+  title        String
+  fileKey      String          // S3 key
+  fileUrl      String          // (eventueel presigned/public URL)
+  uploadedAt   DateTime        @default(now())
 }
 
 model HourEntry {
-  id           String   @id @default(cuid())
+  id           String        @id @default(cuid())
   driverId     String
   driver       DriverProfile @relation(fields: [driverId], references: [id])
   date         DateTime
   startTime    DateTime
   endTime      DateTime
-  breakMinutes Int       @default(0)
+  breakMinutes Int           @default(0)
   notes        String?
-  approved     Boolean   @default(false)
-  createdAt    DateTime  @default(now())
+  approved     Boolean       @default(false)
+  createdAt    DateTime      @default(now())
 }
