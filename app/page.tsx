@@ -5,11 +5,11 @@ export default function Home(){
         <h1 className="text-4xl font-bold">Transport zoals het hoort</h1>
         <p>Betrouwbare ritten, duidelijke communicatie en een portaal voor chauffeurs en opdrachtgevers.</p>
         <div className="flex gap-3">
-          <a className="btn btn-primary" href="/login">Ga naar het portaal</a>
-          <a className="btn" href="/contact">Offerte aanvragen</a>
+          <a className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-200 bg-gray-900 text-white" href="/login">Ga naar het portaal</a>
+          <a className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-200" href="/contact">Offerte aanvragen</a>
         </div>
       </div>
-      <div className="card">
+      <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-sm">
         <h2 className="text-xl font-semibold mb-2">Wat u krijgt</h2>
         <ul className="list-disc pl-6 space-y-1">
           <li>Chauffeursportaal: profiel, documenten, uren</li>
