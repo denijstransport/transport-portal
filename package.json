@@ -1,9 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/package.json b/package.json
-index fce202f3a96f857b21bdcc7bd79ea6abda9b664c..a4314499a938537235f8f3bc8bbb537ede8fc908 100644
---- a/package.json
-+++ b/package.json
-@@ -1,24 +1,26 @@
 +{
    "name": "transport-portal",
    "version": "1.0.0",
@@ -30,6 +24,3 @@ index fce202f3a96f857b21bdcc7bd79ea6abda9b664c..a4314499a938537235f8f3bc8bbb537e
      "autoprefixer": "10.4.19"
    }
 +}
- 
-EOF
-)
