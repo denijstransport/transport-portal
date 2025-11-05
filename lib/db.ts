@@ -5,8 +5,15 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
-const prisma = global.prisma || new PrismaClient();
+let prisma: PrismaClient;
 
-if (process.env.NODE_ENV !== 'production') global.prisma = prisma;
+if (process.env.DATABASE_URL) {
+  prisma = global.prisma || new PrismaClient();
+  if (process.env.NODE_ENV !== 'production') global.prisma = prisma;
+} else {
+  console.warn('⚠️ DATABASE_URL niet ingesteld — Prisma is uitgeschakeld.');
+  // @ts-ignore
+  prisma = {} as PrismaClient;
+}
 
 export default prisma;
