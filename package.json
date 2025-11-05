@@ -1,24 +1,35 @@
-  "name": "transport-portal",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "prisma generate && next build",
-    "start": "next start",
-    "postinstall": "prisma generate"
-  },
-  "dependencies": {
-    "@prisma/client": "5.22.0",
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
-  },
-  "devDependencies": {
-    "prisma": "5.22.0",
-    "typescript": "5.5.4",
-    "@types/react": "18.3.3",
-    "@types/node": "20.14.10",
-    "tailwindcss": "3.4.10",
-    "postcss": "8.4.38",
-    "autoprefixer": "10.4.19"
-  }
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/package.json b/package.json
+index fce202f3a96f857b21bdcc7bd79ea6abda9b664c..a4314499a938537235f8f3bc8bbb537ede8fc908 100644
+--- a/package.json
++++ b/package.json
+@@ -1,24 +1,26 @@
++{
+   "name": "transport-portal",
+   "version": "1.0.0",
+   "private": true,
+   "scripts": {
+     "dev": "next dev",
+     "build": "prisma generate && next build",
+     "start": "next start",
+     "postinstall": "prisma generate"
+   },
+   "dependencies": {
+     "@prisma/client": "5.22.0",
+     "next": "14.2.5",
+     "react": "18.3.1",
+     "react-dom": "18.3.1"
+   },
+   "devDependencies": {
+     "prisma": "5.22.0",
+     "typescript": "5.5.4",
+     "@types/react": "18.3.3",
+     "@types/node": "20.14.10",
+     "tailwindcss": "3.4.10",
+     "postcss": "8.4.38",
+     "autoprefixer": "10.4.19"
+   }
++}
+ 
+EOF
+)
