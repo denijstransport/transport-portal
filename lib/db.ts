@@ -1,19 +1,23 @@
+// /lib/db.ts
 import { PrismaClient } from '@prisma/client';
 
-declare global {
-  // eslint-disable-next-line no-var
-  var prisma: PrismaClient | undefined;
+let _prisma: PrismaClient | null = null;
+
+/**
+ * Lazy singleton: maakt pas een PrismaClient aan wanneer je hem AANROEPT.
+ * Tijdens build (zonder DATABASE_URL) wordt er niets geïnitialiseerd.
+ */
+export function getPrisma(): PrismaClient | null {
+  if (!_prisma) {
+    if (!process.env.DATABASE_URL) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('⚠️ DATABASE_URL ontbreekt: Prisma uitgeschakeld (build blijft groen).');
+      }
+      return null;
+    }
+    _prisma = new PrismaClient();
+  }
+  return _prisma;
 }
 
-let prisma: PrismaClient;
-
-if (process.env.DATABASE_URL) {
-  prisma = global.prisma || new PrismaClient();
-  if (process.env.NODE_ENV !== 'production') global.prisma = prisma;
-} else {
-  console.warn('⚠️ DATABASE_URL niet ingesteld — Prisma is uitgeschakeld.');
-  // @ts-ignore
-  prisma = {} as PrismaClient;
-}
-
-export default prisma;
+export type Prisma = PrismaClient;
