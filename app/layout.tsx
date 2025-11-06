@@ -1,6 +1,6 @@
 import './globals.css';
 
-export const metadata = { title: 'Jullie Transport', description: 'Transportbedrijf' };
+export const metadata = { title: 'De Nijs Solutions', description: 'Transportbedrijf' };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -8,7 +8,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-gray-50 text-gray-900">
         <header className="border-b bg-white">
           <div className="max-w-6xl mx-auto flex items-center justify-between p-4">
-            <a href="/" className="font-semibold">Jullie Transport</a>
+            <a href="/" className="font-semibold">De Nijs Solutions</a>
             <nav className="flex gap-6">
               <a href="/diensten">Diensten</a>
               <a href="/contact">Contact</a>
@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
         <main className="max-w-6xl mx-auto p-4">{children}</main>
         <footer className="border-t mt-10 bg-white">
-          <div className="max-w-6xl mx-auto p-4 text-sm">© {new Date().getFullYear()} Jullie Transport</div>
+          <div className="max-w-6xl mx-auto p-4 text-sm">© {new Date().getFullYear()} De Nijs Solutions</div>
         </footer>
       </body>
     </html>
